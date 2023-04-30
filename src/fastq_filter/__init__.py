@@ -21,6 +21,7 @@ import argparse
 import contextlib
 import functools
 import logging
+import sys
 from typing import Callable, Iterable, Iterator, List, Tuple
 
 import dnaio
@@ -30,9 +31,8 @@ import xopen  # type: ignore
 from ._filters import (
     AverageErrorRateFilter,
     DEFAULT_PHRED_SCORE_OFFSET,
-    MaximumLengthFilter,
+    LengthFilter,
     MedianQualityFilter,
-    MinimumLengthFilter,
     average_error_rate,
     qualmean,
     qualmedian,
@@ -45,9 +45,8 @@ __all__ = [
     "fastq_records_to_file",
     "filter_fastq",
     "AverageErrorRateFilter",
-    "MaximumLengthFilter",
+    "LengthFilter",
     "MedianQualityFilter",
-    "MinimumLengthFilter",
     "average_error_rate",
     "qualmean",
     "qualmedian",
@@ -197,6 +196,8 @@ def argument_parser() -> argparse.ArgumentParser:
                              "'--average-error-rate' option but specified "
                              "with a phred score. I.e '-q 30' is equivalent "
                              "to '-e 0.001'.")
+    parser.add_argument("-qmax", "--max-mean-quality", type=int,
+                        help="Max average quality. Same as 'q' but sets an upper limit to.")
     parser.add_argument("-Q", "--median-quality", type=int,
                         help="The minimum median phred score.")
     parser.add_argument("-c", "--compression-level", type=int,
@@ -223,19 +224,24 @@ def main():
     log.info(f"output files: {', '.join(output)}")
 
     # Filters are ordered from low cost to high cost.
-    if args.min_length:
-        filters.append(MinimumLengthFilter(args.min_length))
-    if args.max_length:
-        filters.append(MaximumLengthFilter(args.max_length))
+    if args.min_length or args.max_length:
+        min_threshold = args.min_length if args.min_length else 0
+        max_threshold = args.max_length if args.max_length else sys.maxsize
+        filters.append(LengthFilter(min_threshold, max_threshold))
     if args.average_error_rate:
-        filters.append(AverageErrorRateFilter(args.average_error_rate))
+        min_threshold = -1
+        max_threshold = args.average_error_rate if args.average_error_rate else 1
+        filters.append(AverageErrorRateFilter(min_threshold, max_threshold))
     if args.mean_quality:
-        error_rate = 10 ** -(args.mean_quality / 10)
-        filters.append(AverageErrorRateFilter(error_rate))
+        min_threshold = 10 ** -(args.max_mean_quality / 10) if args.max_mean_quality else -1
+        max_threshold = 10 ** -(args.mean_quality / 10) if args.mean_quality else 1
+        filters.append(AverageErrorRateFilter(min_threshold, max_threshold))
     if args.median_quality:
-        filters.append(MedianQualityFilter(args.median_quality))
+        min_threshold = args.median_quality
+        max_threshold = sys.maxsize
+        filters.append(MedianQualityFilter(min_threshold, max_threshold))
     for filter in filters:
-        log.info(f"{filter.name}: {filter.threshold}")
+        log.info(f"{filter.name}: [{filter.min_threshold}..{filter.max_threshold}]")
     if not filters:
         log.warning("No filters were applied. Was this intentional?")
 

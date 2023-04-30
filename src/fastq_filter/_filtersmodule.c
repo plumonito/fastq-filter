@@ -286,8 +286,10 @@ typedef struct {
     PyObject_HEAD
     unsigned long long total; 
     unsigned long long pass;
-    double threshold_d;
-    Py_ssize_t threshold_i;
+    double min_threshold_d;
+    Py_ssize_t min_threshold_i;
+    double max_threshold_d;
+    Py_ssize_t max_threshold_i;
     PyTypeObject *sequence_record_class;
     PyObject *sequence_record_atrr;
     uint8_t phred_offset;
@@ -309,8 +311,10 @@ FastqFilter_dealloc(FastqFilter *self)
 
 static PyMemberDef GenericQualityFilterMembers[] = {
     GENERIC_FILTER_MEMBERS
-    {"threshold", T_DOUBLE, offsetof(FastqFilter, threshold_d), READONLY, 
-     "The threshold for this filter."},
+    {"min_threshold", T_DOUBLE, offsetof(FastqFilter, min_threshold_d), READONLY, 
+     "The min threshold for this filter."},
+    {"max_threshold", T_DOUBLE, offsetof(FastqFilter, max_threshold_d), READONLY, 
+     "The max threshold for this filter."},
     {"phred_offset", T_UBYTE, offsetof(FastqFilter, phred_offset), READONLY,
      "The phred offset used for this filter."},
     {NULL}
@@ -318,8 +322,10 @@ static PyMemberDef GenericQualityFilterMembers[] = {
 
 static PyMemberDef GenericLengthFilterMembers[] = {
     GENERIC_FILTER_MEMBERS
-    {"threshold", T_PYSSIZET, offsetof(FastqFilter, threshold_i), READONLY, 
-     "The threshold for this filter."},
+    {"min_threshold", T_PYSSIZET, offsetof(FastqFilter, min_threshold_i), READONLY, 
+     "The min threshold for this filter."},
+    {"max_threshold", T_PYSSIZET, offsetof(FastqFilter, max_threshold_i), READONLY, 
+     "The max threshold for this filter."},
     {NULL}
 };
 
@@ -342,12 +348,14 @@ static PyObject *
 GenericQualityFilter__new__(PyTypeObject *type, PyObject *args, PyObject *kwargs) 
 {
     uint8_t phred_offset = DEFAULT_PHRED_SCORE_OFFSET;
-    double threshold_d = 0.0L;
-    static char *kwarg_names[] = {"threshold", "phred_offset", NULL};
-    static const char *format = "d|$b:";
+    double min_threshold_d = 0.0L;
+    double max_threshold_d = 0.0L;
+    static char *kwarg_names[] = {"min_threshold", "max_threshold", "phred_offset", NULL};
+    static const char *format = "dd|$b:";
     if (!PyArg_ParseTupleAndKeywords(
         args, kwargs, format, kwarg_names,
-        &threshold_d,
+        &min_threshold_d,
+        &max_threshold_d,
         &phred_offset)) {
             return NULL;
     }
@@ -361,8 +369,10 @@ GenericQualityFilter__new__(PyTypeObject *type, PyObject *args, PyObject *kwargs
     }
     FastqFilter *self = PyObject_New(FastqFilter, type);
     self->phred_offset = phred_offset;
-    self->threshold_d = threshold_d;
-    self->threshold_i = 0;
+    self->min_threshold_d = min_threshold_d;
+    self->min_threshold_i = 0;
+    self->max_threshold_d = max_threshold_d;
+    self->max_threshold_i = 0;
     self->total = 0;
     self->pass = 0;
     self->sequence_record_class = sequence_record_class;
@@ -374,12 +384,13 @@ static PyObject *
 GenericLengthFilter__new__(PyTypeObject *type, PyObject *args, PyObject *kwargs) 
 {
     uint8_t phred_offset = DEFAULT_PHRED_SCORE_OFFSET;
-    Py_ssize_t threshold_i = 0L;
-    static char *kwarg_names[] = {"threshold", NULL};
-    static const char *format = "n|:";
+    Py_ssize_t min_threshold_i = 0L;
+    Py_ssize_t max_threshold_i = 0L;
+    static char *kwarg_names[] = {"min_threshold", "max_threshold", NULL};
+    static const char *format = "nn|:";
     if (!PyArg_ParseTupleAndKeywords(
         args, kwargs, format, kwarg_names,
-        &threshold_i)) {
+        &min_threshold_i, &max_threshold_i)) {
             return NULL;
     }
     PyTypeObject *sequence_record_class = import_dnaio_sequence_record();
@@ -388,8 +399,10 @@ GenericLengthFilter__new__(PyTypeObject *type, PyObject *args, PyObject *kwargs)
     }
     FastqFilter *self = PyObject_New(FastqFilter, type);
     self->phred_offset = phred_offset;
-    self->threshold_i = threshold_i;
-    self->threshold_d = 0.0L;
+    self->min_threshold_i = min_threshold_i;
+    self->min_threshold_d = 0.0L;
+    self->max_threshold_i = max_threshold_i;
+    self->max_threshold_d = 0.0L;
     self-> total = 0;
     self->pass = 0;
     self->sequence_record_class = sequence_record_class;
@@ -482,7 +495,7 @@ AverageErrorRateFilter__call__(FastqFilter *self, PyObject *args, PyObject *kwar
     }
     double error_rate = total_error_sum / (double)length_sum;
     self->total += 1;
-    int pass = error_rate <= self->threshold_d;
+    int pass = error_rate > self->min_threshold_d && error_rate <= self->max_threshold_d;
     if (pass) {
         self->pass += 1;
     }
@@ -533,7 +546,7 @@ MedianQualityFilter__call__(FastqFilter *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
     self->total += 1;
-    int pass = median >= self->threshold_d;
+    int pass = median >= self->min_threshold_d && median < self->max_threshold_d;
     if (pass) {
         self->pass += 1;
     }
@@ -542,13 +555,17 @@ MedianQualityFilter__call__(FastqFilter *self, PyObject *args, PyObject *kwargs)
 
 
 static PyObject * 
-MinLengthFilter__call__(FastqFilter *self, PyObject *args, PyObject *kwargs)
+LengthFilter__call__(FastqFilter *self, PyObject *args, PyObject *kwargs)
 {
     PyObject *record_tuple = GenericFilter_ParseArgsToRecordTuple(
         args, kwargs, self->sequence_record_class);
     if (record_tuple == NULL) {
         return NULL;
     }
+
+    char pass_min = 0;
+    char pass_max = 1;
+
     PyObject *record;
     Py_ssize_t record_tuple_length = PyTuple_GET_SIZE(record_tuple);
     for (Py_ssize_t i=0; i < record_tuple_length; i++) {
@@ -559,42 +576,23 @@ MinLengthFilter__call__(FastqFilter *self, PyObject *args, PyObject *kwargs)
         }
         // If any of the records passes the minimum length we pass.
         // R1 and R2 sequence the same molecule so this is valid.
-        if (length >= self->threshold_i) {
-            self->pass += 1;
-            self->total += 1;
-            Py_RETURN_TRUE;
-        }
-    }
-    self->total += 1;
-    Py_RETURN_FALSE;
-}
-
-static PyObject *
-MaxLengthFilter__call__(FastqFilter *self, PyObject *args, PyObject *kwargs) 
-{
-    PyObject *record_tuple = GenericFilter_ParseArgsToRecordTuple(
-        args, kwargs, self->sequence_record_class);
-    if (record_tuple == NULL) {
-        return NULL;
-    }
-    PyObject *record;
-    Py_ssize_t record_tuple_length = PyTuple_GET_SIZE(record_tuple);
-    for (Py_ssize_t i=0; i < record_tuple_length; i++) {
-        record = PyTuple_GET_ITEM(record_tuple, i);
-        Py_ssize_t length = PyObject_Length(record);
-        if (length < 0) {
-            return NULL;
+        if (length >= self->min_threshold_i) {
+            pass_min = 1;
         }
         // If any of the records exceeds the maximum length we fail.
         // R1 and R2 sequence the same molecule so this is valid.
-        if (length > self->threshold_i) {
-            self->total += 1;
-            Py_RETURN_FALSE;
+        if (length > self->max_threshold_i) {
+            pass_max = 0;
         }
     }
-    self->pass += 1;
     self->total += 1;
-    Py_RETURN_TRUE;
+
+    if(pass_min && pass_max) {
+        self->pass += 1;
+        Py_RETURN_TRUE;
+    } else {
+        Py_RETURN_FALSE;
+    }
 }
 
 static PyObject *
@@ -610,15 +608,9 @@ MedianQualityFilter_get_name(PyObject *self, void *closure)
 }
 
 static PyObject *
-MinimumLengthFilter_get_name(PyObject *self, void *closure)
+LengthFilter_get_name(PyObject *self, void *closure)
 {
-    return PyUnicode_FromString("minimum length");
-}
-
-static PyObject *
-MaximumLengthFilter_get_name(PyObject *self, void *closure)
-{
-    return PyUnicode_FromString("maximum length");
+    return PyUnicode_FromString("length");
 }
 
 static PyGetSetDef AverageErrorRateFilter_properties[] = {
@@ -627,11 +619,8 @@ static PyGetSetDef AverageErrorRateFilter_properties[] = {
 static PyGetSetDef MedianQualityFilter_properties[] = {
     {"name", MedianQualityFilter_get_name, NULL, NULL, NULL}, {NULL}};
 
-static PyGetSetDef MinimumLengthFilter_properties[] = {
-    {"name", MinimumLengthFilter_get_name, NULL, NULL, NULL}, {NULL}};
-
-static PyGetSetDef MaximumLengthFilter_properties[] = {
-    {"name", MaximumLengthFilter_get_name, NULL, NULL, NULL}, {NULL}};
+static PyGetSetDef LengthFilter_properties[] = {
+    {"name", LengthFilter_get_name, NULL, NULL, NULL}, {NULL}};
 
 static PyTypeObject AverageErrorRateFilter_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -655,26 +644,15 @@ static PyTypeObject MedianQualityFilter_Type = {
     .tp_getset = MedianQualityFilter_properties,
 };
 
-static PyTypeObject MinimumLengthFilter_Type = {
+static PyTypeObject LengthFilter_Type = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "_filter.MinimumLengthFilter",
+    .tp_name = "_filter.LengthFilter",
     .tp_basicsize = sizeof(FastqFilter),
     .tp_dealloc = (destructor)FastqFilter_dealloc,
     .tp_new = GenericLengthFilter__new__,
-    .tp_call = (ternaryfunc)MinLengthFilter__call__,
+    .tp_call = (ternaryfunc)LengthFilter__call__,
     .tp_members = GenericLengthFilterMembers,
-    .tp_getset = MinimumLengthFilter_properties
-};
-
-static PyTypeObject MaximumLengthFilter_Type = {
-    PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "_filter.MaximumLengthFilter",
-    .tp_basicsize = sizeof(FastqFilter),
-    .tp_dealloc = (destructor)FastqFilter_dealloc,
-    .tp_new = GenericLengthFilter__new__,
-    .tp_call = (ternaryfunc)MaxLengthFilter__call__,
-    .tp_members = GenericLengthFilterMembers,
-    .tp_getset = MaximumLengthFilter_properties,
+    .tp_getset = LengthFilter_properties,
 };
 
 static struct PyModuleDef _filters_module = {
@@ -703,8 +681,7 @@ PyInit__filters(void)
 
     MODULE_ADD_TYPE(m, AverageErrorRateFilter, AverageErrorRateFilter_Type)
     MODULE_ADD_TYPE(m, MedianQualityFilter, MedianQualityFilter_Type)
-    MODULE_ADD_TYPE(m, MinimumLengthFilter, MinimumLengthFilter_Type)
-    MODULE_ADD_TYPE(m, MaximumLengthFilter, MaximumLengthFilter_Type)
+    MODULE_ADD_TYPE(m, LengthFilter, LengthFilter_Type)
 
     PyModule_AddIntMacro(m, DEFAULT_PHRED_SCORE_OFFSET);
     return m;
